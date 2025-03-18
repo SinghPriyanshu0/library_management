@@ -100,27 +100,40 @@ def borrow_book(user_id, book_id):
 
     try:
         # Check if book is available
-        cur.execute("SELECT available FROM books WHERE book_id = %s;", (book_id,))
+        cur.execute("SELECT available, title FROM books WHERE book_id = %s;", (book_id,))
         book = cur.fetchone()
         if not book or not book[0]:
             return "❌ Book is already borrowed!"
 
-        # Mark book as borrowed
+        # Get user name from users table
+        cur.execute("SELECT name FROM users WHERE user_id = %s;", (user_id,))
+        user_name = cur.fetchone()[0]
+
+        # Mark book as borrowed (not available)
         cur.execute("UPDATE books SET available = FALSE WHERE book_id = %s;", (book_id,))
 
         # Add transaction entry
         cur.execute("INSERT INTO transactions (user_id, book_id, borrow_date) VALUES (%s, %s, CURRENT_TIMESTAMP);",
                     (user_id, book_id))
+
+        # Insert into borrowed_books_history
+        cur.execute("""
+            INSERT INTO borrowed_books_history (user_id, user_name, book_id, book_title, issued_date)
+            VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP);
+        """, (user_id, user_name, book_id, book[1]))  # book[1] is the book title
+
         conn.commit()
 
         return "✅ Book borrowed successfully!"
     
     except Exception as e:
+        conn.rollback()  # Rollback in case of error
         return f"❌ Borrowing failed: {str(e)}"
     
     finally:
         cur.close()
         conn.close()
+
 
 # Function to return a book
 def return_book(transaction_id, book_id):
@@ -130,14 +143,41 @@ def return_book(transaction_id, book_id):
     try:
         # Mark book as available again
         cur.execute("UPDATE books SET available = TRUE WHERE book_id = %s;", (book_id,))
-        
-        # Remove transaction entry
+
+        # Get the user_id and book title for the transaction
+        cur.execute("""
+            SELECT u.user_id, u.name, b.title 
+            FROM transactions t
+            JOIN users u ON t.user_id = u.user_id
+            JOIN books b ON t.book_id = b.book_id
+            WHERE t.transaction_id = %s;
+        """, (transaction_id,))
+        user_data = cur.fetchone()
+
+        if not user_data:
+            return "❌ Transaction not found."
+
+        user_id, user_name, book_title = user_data
+
+        # Get the current date for return
+        return_date = "CURRENT_DATE"  # You can use CURRENT_TIMESTAMP if you want a timestamp
+
+        # Insert the return details into borrowed_books_history table
+        cur.execute("""
+            UPDATE borrowed_books_history 
+            SET return_date = CURRENT_DATE
+            WHERE user_id = %s AND book_id = %s AND return_date IS NULL;
+        """, (user_id, book_id))  # Mark the return date for the book
+
+        # Remove the transaction entry (optional)
         cur.execute("DELETE FROM transactions WHERE transaction_id = %s;", (transaction_id,))
+
         conn.commit()
 
         return "✅ Book returned successfully!"
     
     except Exception as e:
+        conn.rollback()  # Rollback in case of error
         return f"❌ Error returning book: {str(e)}"
 
     finally:
